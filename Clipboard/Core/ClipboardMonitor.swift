@@ -33,11 +33,14 @@ class ClipboardMonitor: ObservableObject {
     // MARK: - Private Properties
 
     private var timer: DispatchSourceTimer?
-    private let monitorQueue = DispatchQueue(label: "com.clipboardguard.monitor", qos: .userInteractive)
+    private let monitorQueue = DispatchQueue(label: "com.klip.monitor", qos: .userInteractive)
     private let patternMatcher = PatternMatcher()
     private var lastChangeCount: Int = 0
     internal var monitoredContent: String?  // Accessible for instant paste verification
     private var monitoredContentHash: String?
+
+    // Statistics Manager
+    var statsManager: StatisticsManager?
 
     // MARK: - Protection Timer
 
@@ -84,6 +87,9 @@ class ClipboardMonitor: ObservableObject {
 
     /// Called when clipboard is locked (user tried to copy during protection)
     var onClipboardLockWarning: ((String) -> Void)?
+
+    /// Called when user copies the same address that's already protected
+    var onSameAddressCopied: ((CryptoType) -> Void)?
 
     // MARK: - Paste Detection
 
@@ -189,10 +195,15 @@ class ClipboardMonitor: ObservableObject {
 
     /// User clicked "Enable Protection" - verify and activate
     func confirmProtection() {
+        print("🔐 [confirmProtection] Activating protection")
+
         guard let originalAddress = pendingAddress,
               let originalHash = pendingHash,
               let type = pendingType else {
             print("⚠️  [Security] No pending protection to confirm")
+            print("   pendingAddress: \(pendingAddress ?? "nil")")
+            print("   pendingHash: \(pendingHash ?? "nil")")
+            print("   pendingType: \(pendingType?.rawValue ?? "nil")")
             return
         }
 
@@ -227,6 +238,7 @@ class ClipboardMonitor: ObservableObject {
             // Increment threats blocked
             DispatchQueue.main.async { [weak self] in
                 self?.threatsBlocked += 1
+                self?.statsManager?.recordThreatBlocked()
             }
 
             // Show critical alert
@@ -246,6 +258,9 @@ class ClipboardMonitor: ObservableObject {
         monitoredContentHash = originalHash  // Use hash captured IMMEDIATELY on copy
         protectionActive = true
         protectionStartTime = Date()
+
+        // Record protection activation in statistics
+        statsManager?.recordProtectionActivation(duration: protectionDuration)
 
         // Create timer on main thread
         DispatchQueue.main.async { [weak self] in
@@ -396,6 +411,7 @@ class ClipboardMonitor: ObservableObject {
         // Update statistics on main thread
         DispatchQueue.main.async { [weak self] in
             self?.checksToday += 1
+            self?.statsManager?.recordCheck()
         }
 
         // Read clipboard content
@@ -424,7 +440,7 @@ class ClipboardMonitor: ObservableObject {
 
             // If clipboard changed to something else during protection
             if newHash != monitoredContentHash {
-                print("🚨 [CLIPBOARD LOCKED] User tried to copy something else during protection!")
+                print("🛡️  [PROTECTION ACTIVE] User tried to copy something else during protection!")
                 print("   ❌ Blocked: \"\(trimmedContent.prefix(30))...\"")
                 print("   ✅ Restoring protected address")
 
@@ -467,6 +483,19 @@ class ClipboardMonitor: ObservableObject {
         print("   isPasteEvent: \(isPasteEvent)")
         print("   protectionActive: \(protectionActive)")
 
+        // Check if copying the same address that's currently protected
+        if protectionActive && !isPasteEvent {
+            let currentHash = hashContent(content)
+            if let protectedHash = monitoredContentHash, currentHash == protectedHash {
+                print("   ℹ️  SAME ADDRESS - User copied the same protected address again (already protected)")
+                // Show satisfying "already protected" toast
+                DispatchQueue.main.async { [weak self] in
+                    self?.onSameAddressCopied?(type)
+                }
+                return
+            }
+        }
+
         // Update published properties ON MAIN THREAD
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
@@ -487,6 +516,7 @@ class ClipboardMonitor: ObservableObject {
                 // Update paste count ON MAIN THREAD
                 DispatchQueue.main.async { [weak self] in
                     self?.pasteCount += 1
+                    self?.statsManager?.recordSafePaste()
                 }
             } else {
                 print("   ℹ️  PASTE EVENT - Different content (not the protected address)")
@@ -501,7 +531,9 @@ class ClipboardMonitor: ObservableObject {
 
             // Update copy count ON MAIN THREAD
             DispatchQueue.main.async { [weak self] in
-                self?.copyCount += 1
+                guard let self = self else { return }
+                self.copyCount += 1
+                self.statsManager?.recordCryptoCopy(type: type)
             }
         }
     }
@@ -523,20 +555,13 @@ class ClipboardMonitor: ObservableObject {
         pendingCaptureTime = captureTime
 
         // Show confirmation widget to user (async, safe)
+        // The widget itself handles auto-dismiss timeout
         DispatchQueue.main.async { [weak self] in
             self?.onCryptoDetected?(address, type)
         }
 
         // Start monitoring for clipboard changes during confirmation
         startPendingProtectionMonitoring()
-
-        // Auto-dismiss after 10 seconds if user doesn't respond
-        DispatchQueue.main.asyncAfter(deadline: .now() + 10.0) { [weak self] in
-            if self?.pendingHash != nil {
-                print("⏱️  [Security] Confirmation timeout - auto-dismissing")
-                self?.dismissPendingProtection()
-            }
-        }
     }
 
     /// Monitors clipboard during confirmation period (detects hijacking attempts)

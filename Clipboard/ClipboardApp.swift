@@ -14,38 +14,123 @@ import AppKit
 // CRITICAL: AppDelegate to prevent automatic window opening and desktop switching
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem?
+    var popover: NSPopover?
+    var eventMonitor: Any?
+    var statisticsManager: StatisticsManager?
+    var clipboardMonitor: ClipboardMonitor?
+    var licenseManager: LicenseManager?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // CRITICAL: Set activation policy to accessory to prevent dock icon and app switching
         NSApp.setActivationPolicy(.accessory)
 
+        // Create the popover
+        popover = NSPopover()
+        popover?.behavior = .transient
+        popover?.animates = true
+
         // Add menu bar icon so users can still access the app
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem?.button {
-            // Modern minimal icon: doc.on.clipboard.fill (clipboard with protection indicator)
-            button.image = NSImage(systemSymbolName: "doc.on.clipboard.fill", accessibilityDescription: "ClipboardGuard")
-            button.action = #selector(showMainWindow)
+            // Use emoji for better visibility
+            button.title = "📋"
+
+            // Also try to add an image
+            if let image = NSImage(systemSymbolName: "doc.on.clipboard.fill", accessibilityDescription: "Klip") {
+                image.size = NSSize(width: 16, height: 16)
+                button.image = image
+                // If image works, clear the title
+                button.title = ""
+            }
+
+            button.action = #selector(togglePopover)
             button.target = self
+            button.toolTip = "Klip - Click for Dashboard"
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+
+            print("✅ Menu bar icon created successfully")
+            print("   Button frame: \(button.frame)")
+            print("   Has image: \(button.image != nil)")
+            print("   Title: '\(button.title)'")
+        } else {
+            print("❌ Failed to create menu bar button")
+        }
+
+        // Don't add global event monitor here - it requires accessibility permissions
+        // The popover's transient behavior will handle dismissal automatically
+    }
+
+    @objc func togglePopover() {
+        if popover?.isShown == true {
+            closePopover()
+        } else {
+            showPopover()
         }
     }
 
-    @objc func showMainWindow() {
-        // Temporarily switch to regular app to show window
-        NSApp.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
+    func showPopover() {
+        guard let button = statusItem?.button else {
+            print("❌ No status bar button available")
+            return
+        }
 
-        // Find and show the main window
-        for window in NSApp.windows {
-            if window.title.isEmpty || window.contentView is NSHostingView<ContentView> {
-                window.makeKeyAndOrderFront(nil)
-                break
+        // Create a simple view if managers aren't ready yet
+        if statisticsManager == nil || clipboardMonitor == nil || licenseManager == nil {
+            print("⚠️ Managers not ready, showing simple view")
+            let simpleView = VStack {
+                Text("Klip")
+                    .font(.title2)
+                    .padding()
+                Text("Loading...")
+                    .foregroundColor(.gray)
             }
+            .frame(width: 300, height: 100)
+            .background(Color(NSColor.controlBackgroundColor))
+
+            popover?.contentViewController = NSHostingController(rootView: simpleView)
+            popover?.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            return
         }
 
-        // Switch back to accessory after a delay
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            NSApp.setActivationPolicy(.accessory)
+        guard let statsManager = statisticsManager,
+              let clipboardMonitor = clipboardMonitor,
+              let licenseManager = licenseManager else { return }
+
+        // Create the main menu bar view with all options
+        let mainView = MenuBarMainView(
+            licenseManager: licenseManager,
+            clipboardMonitor: clipboardMonitor,
+            statisticsManager: statsManager
+        )
+        .frame(width: licenseManager.isLicensed ? 800 : 450,
+               height: licenseManager.isLicensed ? 600 : 500)
+
+        popover?.contentViewController = NSHostingController(rootView: mainView)
+        popover?.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+
+        // Add smooth fade-in animation
+        popover?.contentViewController?.view.alphaValue = 0
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.25
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            popover?.contentViewController?.view.animator().alphaValue = 1.0
         }
+    }
+
+    func closePopover() {
+        // Smooth fade-out animation
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.15
+            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            popover?.contentViewController?.view.animator().alphaValue = 0.0
+        }, completionHandler: { [weak self] in
+            self?.popover?.performClose(nil)
+        })
+    }
+
+    @objc func showMainWindow() {
+        // Legacy method - now we use popover instead
+        togglePopover()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -65,6 +150,7 @@ struct ClipboardApp: App {
 
     @StateObject private var licenseManager = LicenseManager()
     @StateObject private var clipboardMonitor = ClipboardMonitor()
+    @StateObject private var statisticsManager = StatisticsManager()
 
     #if os(macOS)
     private let floatingIndicator = FloatingIndicatorWindow()
@@ -92,21 +178,47 @@ struct ClipboardApp: App {
     // MARK: - Body
 
     var body: some Scene {
+        #if os(macOS)
+        // Empty window group - we use menu bar only
+        WindowGroup {
+            EmptyView()
+                .frame(width: 0, height: 0)
+                .onAppear {
+                    // Delay initialization to ensure everything is ready
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        // Link statistics manager to clipboard monitor
+                        clipboardMonitor.statsManager = statisticsManager
+
+                        // Pass state objects to AppDelegate for menu bar popover
+                        appDelegate.statisticsManager = statisticsManager
+                        appDelegate.clipboardMonitor = clipboardMonitor
+                        appDelegate.licenseManager = licenseManager
+
+                        setupApp()
+
+                        // Hide the main window immediately
+                        for window in NSApp.windows {
+                            window.close()
+                        }
+                    }
+                }
+        }
+        .windowStyle(.hiddenTitleBar)
+        .windowResizability(.contentSize)
+        .defaultSize(width: 0, height: 0)
+        .commandsRemoved()
+        #else
         WindowGroup {
             ContentView(
                 licenseManager: licenseManager,
-                clipboardMonitor: clipboardMonitor
+                clipboardMonitor: clipboardMonitor,
+                statisticsManager: statisticsManager
             )
             .onAppear {
+                clipboardMonitor.statsManager = statisticsManager
                 setupApp()
             }
         }
-        #if os(macOS)
-        .windowStyle(.hiddenTitleBar)
-        .windowResizability(.contentSize)
-        // CRITICAL: Don't auto-show window when app activates
-        .defaultSize(width: 800, height: 600)
-        .commandsRemoved()
         #endif
     }
 
@@ -120,8 +232,11 @@ struct ClipboardApp: App {
             await notificationManager.requestAuthorization()
         }
 
-        // Setup COPY detector (Cmd+C) - Regular copy
+        // Temporarily disable paste detector to isolate crash issue
         #if os(macOS)
+        // TEMPORARILY DISABLED - Paste detection can cause system errors
+        // Will re-enable once core functionality is stable
+        if false {
         pasteDetector.onCopyDetected = { [self] in
             // Record timestamp for time-correlation
             clipboardMonitor.lastUserCopyTime = pasteDetector.lastUserCopyTimestamp
@@ -143,7 +258,7 @@ struct ClipboardApp: App {
 
                 // Show warning in notch
                 Task { @MainActor in
-                    await self.notchManager.showWarning("🔒 Clipboard is locked - protection active!")
+                    await self.notchManager.showWarning("🛡️ Protection Already Active")
                 }
                 return
             }
@@ -184,26 +299,32 @@ struct ClipboardApp: App {
             }
         }
 
-        // Setup ESCAPE key detector - dismiss protection
+        // Setup ESCAPE key detector - dismiss protection OR confirmation widget
         pasteDetector.onEscapePressed = { [self] in
-            guard clipboardMonitor.protectionActive else {
-                print("ℹ️  Escape pressed but no active protection")
-                return
+            // Check if there's an active confirmation widget OR active protection
+            if notchManager.hasActiveWidget() {
+                print("🔓 [Escape] User dismissed widget")
+
+                // If protection is active, stop it
+                if clipboardMonitor.protectionActive {
+                    print("   Stopping active protection")
+                    timerWrapper.timer?.invalidate()
+                    timerWrapper.timer = nil
+                    clipboardMonitor.stopProtection()
+                } else {
+                    print("   Dismissing confirmation widget")
+                    clipboardMonitor.dismissPendingProtection()
+                }
+
+                // Hide the widget (works for both confirmation and timer)
+                Task { @MainActor in
+                    print("🚪 [Escape] Hiding widget...")
+                    await notchManager.hideProtectionTimer()
+                    print("✅ [Escape] Widget hidden")
+                }
+            } else {
+                print("ℹ️  Escape pressed but no active widget")
             }
-
-            print("🔓 [Escape] User manually dismissed protection")
-
-            // Stop protection
-            clipboardMonitor.stopProtection()
-
-            // Hide the timer widget
-            Task { @MainActor in
-                await notchManager.hideProtectionTimer()
-            }
-
-            // Stop timer update loop
-            timerWrapper.timer?.invalidate()
-            timerWrapper.timer = nil
         }
 
         // Setup PASTE detector (Cmd+V)
@@ -255,6 +376,10 @@ struct ClipboardApp: App {
 
         pasteBlocker.onPasteBlocked = { [self] original, hijacked in
             print("🚨 PASTE BLOCKED - Showing red alert at cursor!")
+
+            // Strong haptic feedback for blocked paste (error)
+            HapticFeedback.shared.error()
+
             DispatchQueue.main.async {
                 blockedPasteAlert.showBlocked(original: original, hijacked: hijacked)
             }
@@ -262,6 +387,7 @@ struct ClipboardApp: App {
             // Also increment threats blocked counter
             clipboardMonitor.threatsBlocked += 1
         }
+        } // End of if false block - paste detector disabled
         #endif
 
         // Setup clipboard monitoring callbacks - NEW OPT-IN FLOW
@@ -282,12 +408,24 @@ struct ClipboardApp: App {
         }
 
         clipboardMonitor.onProtectionConfirmed = { [self] type, address in
-            print("🛡️ PROTECTION CONFIRMED by user")
+            print("🛡️ PROTECTION CONFIRMED by user (Option+Cmd+C instant protection)")
 
-            // Show protection timer widget
+            // This callback is ONLY for Option+Cmd+C instant protection
+            // For normal Cmd+C flow, the timer is shown via transitionWidgetToTimer()
+            // So we need to check if we already have a confirmation widget showing
             #if os(macOS)
-            DispatchQueue.main.async {
-                self.showProtectionTimer(for: type)
+            // Only show timer if we don't already have a widget transition in progress
+            // (This callback is triggered by both instant protection AND regular confirmation)
+            // For regular confirmation, we handle it in the onConfirm callback
+            // For instant protection, there's no confirmation widget, so show timer directly
+            if !notchManager.hasActiveWidget() {
+                Task { @MainActor [clipboardMonitor, notchManager] in
+                    print("   🎯 Showing timer for instant protection (no confirmation widget)")
+                    await notchManager.showTimerDirectly(type: type, timeRemaining: clipboardMonitor.protectionTimeRemaining)
+                    self.startTimerUpdateLoop(for: type)
+                }
+            } else {
+                print("   ⏭️  Skipping timer show - widget transition already in progress")
             }
             #endif
         }
@@ -307,12 +445,23 @@ struct ClipboardApp: App {
         }
 
         clipboardMonitor.onClipboardLockWarning = { [self] message in
-            print("🔒 [CLIPBOARD LOCKED] \(message)")
+            print("🛡️  [PROTECTION ACTIVE] \(message)")
 
             // Show warning in notch
             #if os(macOS)
             Task { @MainActor in
-                await self.notchManager.showWarning("⚠️ Clipboard is locked during protection")
+                await self.notchManager.showWarning("🛡️ Protection Already Active")
+            }
+            #endif
+        }
+
+        clipboardMonitor.onSameAddressCopied = { [self] type in
+            print("✅ SAME ADDRESS: User copied protected address again")
+
+            // Show satisfying "already protected" toast
+            #if os(macOS)
+            Task { @MainActor in
+                await self.notchManager.showSameAddressToast(for: type)
             }
             #endif
         }
@@ -350,59 +499,50 @@ struct ClipboardApp: App {
 
     #if os(macOS)
     private func showConfirmationWidget(address: String, type: CryptoType) {
-        print("🔐 [Confirmation] Showing opt-in widget for \(type.rawValue)")
+        print("🔐 [Confirmation] Showing unified widget in confirmation state")
 
-        // Show confirmation widget in notch
-        Task { @MainActor in
-            await notchManager.showConfirmation(
-                address: address,
-                type: type,
-                onConfirm: { [weak clipboardMonitor, weak notchManager] in
-                    print("✅ [Confirmation] User clicked 'Enable Protection'")
+        // Show unified widget in confirmation state
+        notchManager.showConfirmation(
+            address: address,
+            type: type,
+            onConfirm: { [clipboardMonitor] in
+                print("✅ [Confirmation] Protect button clicked - activating protection")
 
-                    // Hide confirmation widget immediately
-                    Task { @MainActor in
-                        await notchManager?.hideConfirmation()
+                // Immediately activate protection (no delays, no async)
+                clipboardMonitor.confirmProtection()
 
-                        // Small delay for smooth transition (just animation time)
-                        try? await Task.sleep(for: .milliseconds(100))
-
-                        // Confirm protection (this triggers onProtectionConfirmed which shows timer)
-                        clipboardMonitor?.confirmProtection()
-                    }
-                },
-                onDismiss: { [weak clipboardMonitor] in
-                    print("❌ [Confirmation] User dismissed")
-                    clipboardMonitor?.dismissPendingProtection()
+                // Now SYNCHRONOUSLY transition: hide confirmation → show timer
+                let timeRemaining = clipboardMonitor.protectionTimeRemaining
+                Task { @MainActor in
+                    await self.transitionWidgetToTimer(type: type, timeRemaining: timeRemaining)
                 }
-            )
-        }
+            },
+            onDismiss: { [clipboardMonitor] in
+                print("❌ [Confirmation] User dismissed - clearing protection")
+                clipboardMonitor.dismissPendingProtection()
+            }
+        )
     }
 
-    private func showProtectionTimer(for type: CryptoType) {
-        print("🎯 [ProtectionTimer] Showing notch widget for \(type.rawValue)")
-        print("   Time remaining: \(clipboardMonitor.protectionTimeRemaining)s")
+    // Transitions the unified widget from confirmation to timer state (SYNCHRONOUS)
+    private func transitionWidgetToTimer(type: CryptoType, timeRemaining: TimeInterval) async {
+        print("🔄 [UnifiedWidget] Starting synchronous transition")
 
-        // Stop any existing timer update loop
+        // SYNCHRONOUSLY: hide confirmation → show timer (awaits completion)
+        await notchManager.transitionToTimer(type: type, timeRemaining: timeRemaining)
+
+        print("✅ [UnifiedWidget] Transition complete, starting timer loop")
+        // Start timer update loop
+        startTimerUpdateLoop(for: type)
+    }
+
+    // Start timer update loop for unified widget
+    private func startTimerUpdateLoop(for type: CryptoType) {
+        print("🔄 [TimerLoop] Starting timer update loop")
+
+        // Stop any existing timer
         timerWrapper.timer?.invalidate()
         timerWrapper.timer = nil
-
-        // Show the timer in the notch
-        Task { @MainActor in
-            await notchManager.showProtectionTimer(
-                for: type,
-                timeRemaining: clipboardMonitor.protectionTimeRemaining,
-                onDismiss: { [weak timerWrapper, weak clipboardMonitor] in
-                    print("❌ [ProtectionTimer] User dismissed via × button")
-                    timerWrapper?.timer?.invalidate()
-                    timerWrapper?.timer = nil
-                    clipboardMonitor?.stopProtection()
-                }
-            )
-        }
-
-        // Start updating the timer every 0.1 seconds for smooth countdown
-        print("🔄 [ProtectionTimer] Starting update loop (every 0.1s)")
 
         var lastLoggedSecond = -1
         timerWrapper.timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak timerWrapper, weak clipboardMonitor, weak notchManager] _ in
@@ -412,7 +552,7 @@ struct ClipboardApp: App {
             // Log every second to avoid spam
             let currentSecond = Int(timeRemaining)
             if currentSecond != lastLoggedSecond {
-                print("🔄 [ProtectionTimer] Updating: \(currentSecond)s, active: \(monitor.protectionActive)")
+                print("🔄 [TimerLoop] Updating: \(currentSecond)s, active: \(monitor.protectionActive)")
                 lastLoggedSecond = currentSecond
             }
 
@@ -427,7 +567,9 @@ struct ClipboardApp: App {
                 timerWrapper?.timer?.invalidate()
                 timerWrapper?.timer = nil
                 Task { @MainActor in
+                    print("🚪 [TimerExpired] Hiding widget...")
                     await notchManager?.hideProtectionTimer()
+                    print("✅ [TimerExpired] Widget hidden")
                 }
             }
         }

@@ -21,7 +21,7 @@ class LicenseManager: ObservableObject {
 
     // MARK: - Private Properties
 
-    private let keychainKey = "com.clipboardguard.license"
+    private let keychainKey = "com.klip.license"
 
     // MARK: - Initialization
 
@@ -37,16 +37,19 @@ class LicenseManager: ObservableObject {
     ///   - licenseKey: License key in format CGRD-XXXX-XXXX-XXXX-XXXX
     /// - Returns: True if license is valid and activated
     func validateAndActivate(email: String, licenseKey: String) -> Bool {
-        // Validate format
+        // Use RSA validation for production licenses
+        if licenseKey.starts(with: "CGRD-") && !licenseKey.contains("TEST") {
+            // Production license - use RSA validation
+            return validateAndActivateWithRSA(email: email, licenseKey: licenseKey)
+        }
+
+        // Development/Test license - use simplified validation
         guard isValidLicenseFormat(licenseKey) else {
             print("❌ Invalid license format")
             return false
         }
 
-        // TODO: Implement full RSA-2048 signature verification
-        // For now, we'll use a simplified validation for development
-
-        // Parse license key (simplified version)
+        // Parse license key (simplified version for testing)
         guard let licenseData = parseLicenseKey(licenseKey, email: email) else {
             print("❌ Failed to parse license key")
             return false
@@ -76,7 +79,7 @@ class LicenseManager: ObservableObject {
         self.licenseData = licenseData
         self.email = email
 
-        print("✅ License activated successfully")
+        print("✅ Test license activated successfully")
         return true
     }
 
@@ -145,7 +148,7 @@ class LicenseManager: ObservableObject {
     // MARK: - Keychain Methods
 
     /// Saves license to Keychain
-    private func saveLicenseToKeychain(email: String, licenseKey: String, data: LicenseData) -> Bool {
+    internal func saveLicenseToKeychain(email: String, licenseKey: String, data: LicenseData) -> Bool {
         // Encode license data
         guard let encodedData = try? JSONEncoder().encode(data) else {
             return false

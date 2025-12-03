@@ -1,4 +1,4 @@
-# ClipboardGuard - Comprehensive Testing Guide
+# Klip - Comprehensive Testing Guide
 
 **Version:** 1.0
 **Last Updated:** October 19, 2025
@@ -23,7 +23,7 @@ Before testing, ensure all required permissions are granted:
 
 ### 2. License Activation ✅
 
-- [ ] Launch ClipboardGuard
+- [ ] Launch Klip
 - [ ] Enter test license credentials:
   - **Email:** `test@example.com`
   - **License Key:** `TEST-LICENSE-KEY-12345`

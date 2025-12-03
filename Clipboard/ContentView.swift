@@ -13,6 +13,7 @@ struct ContentView: View {
 
     @ObservedObject var licenseManager: LicenseManager
     @ObservedObject var clipboardMonitor: ClipboardMonitor
+    @ObservedObject var statisticsManager: StatisticsManager
 
     // MARK: - State
 
@@ -46,7 +47,7 @@ struct ContentView: View {
     #if os(macOS)
     private var macOSInterface: some View {
         TabView(selection: $selectedTab) {
-            DashboardView(clipboardMonitor: clipboardMonitor)
+            DashboardView(clipboardMonitor: clipboardMonitor, statsManager: statisticsManager)
                 .tabItem {
                     Label("Dashboard", systemImage: "shield.checkered")
                 }
@@ -68,7 +69,7 @@ struct ContentView: View {
     #if os(iOS)
     private var iOSInterface: some View {
         TabView(selection: $selectedTab) {
-            DashboardView(clipboardMonitor: clipboardMonitor)
+            DashboardView(clipboardMonitor: clipboardMonitor, statsManager: statisticsManager)
                 .tabItem {
                     Label("Dashboard", systemImage: "shield.checkered")
                 }
@@ -95,21 +96,26 @@ struct ContentView: View {
 }
 
 #Preview("Licensed") {
-    let licenseManager = LicenseManager()
-    let clipboardMonitor = ClipboardMonitor()
-    licenseManager.isLicensed = true
-    clipboardMonitor.isMonitoring = true
-    clipboardMonitor.checksToday = 247
-
-    return ContentView(
-        licenseManager: licenseManager,
-        clipboardMonitor: clipboardMonitor
+    ContentView(
+        licenseManager: {
+            let manager = LicenseManager()
+            manager.isLicensed = true
+            return manager
+        }(),
+        clipboardMonitor: {
+            let monitor = ClipboardMonitor()
+            monitor.isMonitoring = true
+            monitor.checksToday = 247
+            return monitor
+        }(),
+        statisticsManager: StatisticsManager()
     )
 }
 
 #Preview("Unlicensed") {
     ContentView(
         licenseManager: LicenseManager(),
-        clipboardMonitor: ClipboardMonitor()
+        clipboardMonitor: ClipboardMonitor(),
+        statisticsManager: StatisticsManager()
     )
 }

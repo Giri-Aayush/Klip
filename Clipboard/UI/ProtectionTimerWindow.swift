@@ -10,32 +10,55 @@ import Combine
 #if os(macOS)
 import AppKit
 
-/// View model for the protection timer
-class ProtectionTimerViewModel: ObservableObject {
-    @Published var cryptoType: CryptoType
-    @Published var timeRemaining: TimeInterval
+/// Widget state for unified protection widget
+enum ProtectionWidgetState: Equatable {
+    case confirmation(address: String, type: CryptoType)
+    case timer(type: CryptoType, timeRemaining: TimeInterval)
+
+    static func == (lhs: ProtectionWidgetState, rhs: ProtectionWidgetState) -> Bool {
+        switch (lhs, rhs) {
+        case (.confirmation(let addr1, let type1), .confirmation(let addr2, let type2)):
+            return addr1 == addr2 && type1 == type2
+        case (.timer(let type1, let time1), .timer(let type2, let time2)):
+            return type1 == type2 && abs(time1 - time2) < 0.1  // Compare times with tolerance
+        default:
+            return false
+        }
+    }
+}
+
+/// View model for the unified protection widget
+class ProtectionWidgetViewModel: ObservableObject {
+    @Published var state: ProtectionWidgetState
     @Published var warningMessage: String?
     @Published var showWarning: Bool = false
     var onDismiss: (() -> Void)?
 
-    init(cryptoType: CryptoType, timeRemaining: TimeInterval, onDismiss: @escaping () -> Void) {
-        self.cryptoType = cryptoType
-        self.timeRemaining = timeRemaining
+    init(state: ProtectionWidgetState, onDismiss: @escaping () -> Void) {
+        self.state = state
         self.onDismiss = onDismiss
     }
 
+    // Transition from confirmation to timer state
+    func transitionToTimer(type: CryptoType, timeRemaining: TimeInterval) {
+        withAnimation(.smooth(duration: 0.4)) {
+            self.state = .timer(type: type, timeRemaining: timeRemaining)
+        }
+    }
+
+    // Update time for timer state
     func updateTime(_ time: TimeInterval) {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            let oldTime = self.timeRemaining
+            if case .timer(let type, let oldTime) = self.state {
+                // Manually trigger objectWillChange before updating
+                self.objectWillChange.send()
+                self.state = .timer(type: type, timeRemaining: time)
 
-            // Manually trigger objectWillChange before updating
-            self.objectWillChange.send()
-            self.timeRemaining = time
-
-            // Only log every second to avoid spam
-            if Int(oldTime) != Int(time) {
-                print("⏱️  [ViewModel] Timer updated: \(Int(time))s → UI should refresh")
+                // Only log every second to avoid spam
+                if Int(oldTime) != Int(time) {
+                    print("⏱️  [ViewModel] Timer updated: \(Int(time))s → UI should refresh")
+                }
             }
         }
     }
@@ -71,8 +94,13 @@ class ProtectionTimerViewModel: ObservableObject {
 /// Notchnook-style protection timer window - seamlessly integrated with MacBook notch
 class ProtectionTimerWindow: NSWindow {
 
-    private var hostingView: NSView?  // Generic to support both ProtectionTimerView and ConfirmationWidgetView
-    private var viewModel: ProtectionTimerViewModel?
+    private var hostingView: NSView?
+    private var viewModel: ProtectionWidgetViewModel?
+
+    // Callbacks for button actions
+    private var onConfirmCallback: (() -> Void)?
+    private var onSkipCallback: (() -> Void)?
+    private var userResponded: Bool = false  // Prevent auto-dismiss race condition
 
     // Notchnook-style dimensions
     private let notchHeight: CGFloat = 32  // Actual MacBook notch height
@@ -124,36 +152,34 @@ class ProtectionTimerWindow: NSWindow {
         self.alphaValue = 0
     }
 
-    /// Shows confirmation widget (opt-in flow) - asks user to enable protection
+    /// Shows unified widget in confirmation state
     /// Auto-dismisses after 6 seconds if no action taken
     func showConfirmation(address: String, type: CryptoType, onConfirm: @escaping () -> Void, onDismiss: @escaping () -> Void) {
-        print("🔐 [ConfirmationWidget] Showing opt-in widget (6s timeout)")
+        print("🔐 [UnifiedWidget] Showing confirmation state (6s timeout)")
 
-        var userResponded = false  // Track if user clicked button
+        // Store callbacks
+        self.onConfirmCallback = onConfirm
+        self.onSkipCallback = onDismiss
+        self.userResponded = false
 
-        // Create confirmation view with auto-dismiss
-        let confirmationView = ConfirmationWidgetView(
-            address: address,
-            type: type,
+        // Create view model in confirmation state
+        viewModel = ProtectionWidgetViewModel(
+            state: .confirmation(address: address, type: type),
+            onDismiss: onDismiss
+        )
+
+        // Create unified widget view
+        let widgetView = UnifiedProtectionWidgetView(
+            viewModel: viewModel!,
             onConfirm: { [weak self] in
-                userResponded = true
-                print("✅ [ConfirmationWidget] User confirmed - hiding widget then showing timer")
-
-                // Hide confirmation first, THEN trigger protection flow
-                self?.hideConfirmation {
-                    // After hide animation completes, trigger protection
-                    onConfirm()
-                }
+                self?.handleProtectButton()
             },
-            onDismiss: { [weak self] in
-                userResponded = true
-                onDismiss()
-                self?.hideConfirmation()
+            onSkip: { [weak self] in
+                self?.handleSkipButton()
             }
         )
 
-        let hosting = NSHostingView(rootView: confirmationView)
-        // CRITICAL: Remove ALL backgrounds to prevent translucent square artifact
+        let hosting = NSHostingView(rootView: widgetView)
         hosting.wantsLayer = true
         hosting.layer?.backgroundColor = .clear
         hosting.layer?.isOpaque = false
@@ -170,16 +196,13 @@ class ProtectionTimerWindow: NSWindow {
         let startY = screenFrame.maxY - notchHeight
         self.setFrame(NSRect(x: centerX, y: startY, width: confirmationWidgetWidth, height: notchHeight), display: true)
 
-        // CRITICAL: Use orderFrontRegardless() instead of orderFront(nil)
-        // This shows the window WITHOUT activating the app (no dashboard popup)
         self.orderFrontRegardless()
         self.alphaValue = 1.0
 
-        // Animate expansion - smooth ease-out like native macOS notch
+        // Animate expansion
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.5  // Slightly faster for snappier feel
-                // Smooth ease-out curve (no bounce) - feels more native
+                context.duration = 0.5
                 context.timingFunction = CAMediaTimingFunction(name: .easeOut)
                 context.allowsImplicitAnimation = true
 
@@ -198,34 +221,94 @@ class ProtectionTimerWindow: NSWindow {
 
         // Auto-dismiss after 6 seconds ONLY if user didn't respond
         DispatchQueue.main.asyncAfter(deadline: .now() + 6.0) { [weak self] in
-            guard let self = self, self.isVisible, !userResponded else { return }
-            print("⏱️  [ConfirmationWidget] 6s timeout - auto-dismissing")
-            onDismiss()
-            self.hideConfirmation()
+            guard let self = self, self.isVisible, !self.userResponded else { return }
+            print("⏱️  [UnifiedWidget] 6s timeout - auto-dismissing")
+            self.handleSkipButton()
         }
     }
 
-    /// Hides the confirmation widget
-    private func hideConfirmation(completion: (() -> Void)? = nil) {
-        guard let screen = NSScreen.main else {
-            completion?()
+    /// Handle Protect button - transitions to timer state
+    private func handleProtectButton() {
+        guard !userResponded else {
+            print("   ⚠️  [UnifiedWidget] Already responded, ignoring")
             return
         }
+        userResponded = true
+        print("✅ [UnifiedWidget] Protect button clicked - calling callback")
+        HapticFeedback.shared.success()
+        onConfirmCallback?()
+    }
+
+    /// Handle Skip button - dismisses widget
+    private func handleSkipButton() {
+        guard !userResponded else {
+            print("   ⚠️  [UnifiedWidget] Already responded, ignoring")
+            return
+        }
+        userResponded = true
+        print("⏭️  [UnifiedWidget] Skip button clicked - dismissing")
+        HapticFeedback.shared.light()
+        onSkipCallback?()
+        hideWidget()
+    }
+
+    /// Transitions widget from confirmation state to timer state (in-place morph)
+    func transitionToTimer(type: CryptoType, timeRemaining: TimeInterval) {
+        print("🔄 [UnifiedWidget] Transitioning to timer state (in-place)")
+
+        guard let vm = viewModel else {
+            print("   ⚠️  No viewModel - cannot transition")
+            return
+        }
+
+        // Transition the view model state - SwiftUI will animate the content change
+        vm.transitionToTimer(type: type, timeRemaining: timeRemaining)
+
+        // Optionally resize window to fit timer layout (smaller/narrower)
+        guard let screen = NSScreen.main else { return }
+        let screenFrame = screen.frame
+
+        // Animate to timer size
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.4
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                context.allowsImplicitAnimation = true
+
+                let centerX = (screenFrame.width - self.timerWidgetWidth) / 2
+                let finalY = screenFrame.maxY - (self.notchHeight + self.timerExpandedHeight)
+                let timerFrame = NSRect(
+                    x: centerX,
+                    y: finalY,
+                    width: self.timerWidgetWidth,
+                    height: self.notchHeight + self.timerExpandedHeight
+                )
+
+                self.animator().setFrame(timerFrame, display: true)
+            }
+        }
+
+        print("✅ [UnifiedWidget] Transition to timer complete")
+    }
+
+    /// Hides the widget completely
+    private func hideWidget() {
+        guard let screen = NSScreen.main else { return }
         let screenFrame = screen.frame
 
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.35  // Faster collapse feels more responsive
-            // Smooth ease-in for collapse
+            context.duration = 0.35
             context.timingFunction = CAMediaTimingFunction(name: .easeIn)
             context.allowsImplicitAnimation = true
 
             // Collapse back into notch
-            let centerX = (screenFrame.width - confirmationWidgetWidth) / 2
+            let currentWidth = self.frame.width
+            let centerX = (screenFrame.width - currentWidth) / 2
             let collapsedY = screenFrame.maxY - notchHeight
             let collapsedFrame = NSRect(
                 x: centerX,
                 y: collapsedY,
-                width: confirmationWidgetWidth,
+                width: currentWidth,
                 height: notchHeight
             )
 
@@ -234,9 +317,15 @@ class ProtectionTimerWindow: NSWindow {
             self.hasShadow = false
         } completionHandler: {
             self.orderOut(nil)
-            // Call completion after hiding
-            completion?()
+            self.viewModel = nil
         }
+    }
+
+    /// Legacy method for compatibility
+    @available(*, deprecated, message: "Use hideWidget() instead")
+    private func hideConfirmation(completion: (() -> Void)? = nil) {
+        hideWidget()
+        completion?()
     }
 
     /// Shows critical alert when malware detected during confirmation
@@ -289,43 +378,24 @@ class ProtectionTimerWindow: NSWindow {
         }
     }
 
-    /// Shows volume-style thread timer for 2-minute protection
+    /// Shows protection timer directly (for instant protection)
     func showProtection(for type: CryptoType, timeRemaining: TimeInterval, onDismiss: @escaping () -> Void) {
-        print("🪟 [ProtectionTimerWindow] showProtection() called (Volume-style)")
-        print("   Type: \(type.rawValue)")
-        print("   Time: \(timeRemaining)s")
+        print("🪟 [ProtectionTimerWindow] showProtection() - creating unified widget in timer state")
 
-        // If already showing, hide first then show new one
-        if isVisible && viewModel != nil {
-            print("🔄 [ProtectionTimerWindow] Already showing - hiding first")
-            hideProtection()
-
-            // Wait for hide animation to complete
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                self?.displayProtection(for: type, timeRemaining: timeRemaining, onDismiss: onDismiss)
-            }
-            return
-        }
-
-        displayProtection(for: type, timeRemaining: timeRemaining, onDismiss: onDismiss)
-    }
-
-    /// Helper to actually display the protection timer
-    private func displayProtection(for type: CryptoType, timeRemaining: TimeInterval, onDismiss: @escaping () -> Void) {
-        // Create view model
-        viewModel = ProtectionTimerViewModel(
-            cryptoType: type,
-            timeRemaining: timeRemaining,
+        // Create view model in timer state
+        viewModel = ProtectionWidgetViewModel(
+            state: .timer(type: type, timeRemaining: timeRemaining),
             onDismiss: onDismiss
         )
 
-        // Set callback to collapse when warning dismissed
-        viewModel?.onWarningDismissed = { [weak self] in
-            self?.collapseToCompactSize()
-        }
+        // Create unified widget view (in timer state)
+        let widgetView = UnifiedProtectionWidgetView(
+            viewModel: viewModel!,
+            onConfirm: {}, // Not used in timer state
+            onSkip: {}      // Not used in timer state
+        )
 
-        let timerView = ProtectionTimerView(viewModel: viewModel!)
-        let hosting = NSHostingView(rootView: timerView)
+        let hosting = NSHostingView(rootView: widgetView)
         hosting.wantsLayer = true
         hosting.layer?.backgroundColor = .clear
         hosting.layer?.isOpaque = false
@@ -336,31 +406,22 @@ class ProtectionTimerWindow: NSWindow {
 
         guard let screen = NSScreen.main else { return }
         let screenFrame = screen.frame
-
-        // Position window to extend into notch (narrow volume-style)
         let centerX = (screenFrame.width - timerWidgetWidth) / 2
 
-        // Start: Window top edge in notch area, only notch height visible
+        // Start collapsed in notch
         let startY = screenFrame.maxY - notchHeight
         self.setFrame(NSRect(x: centerX, y: startY, width: timerWidgetWidth, height: notchHeight), display: true)
 
-        print("🪟 [ProtectionTimerWindow] Ordering window front...")
-        // Use orderFrontRegardless() to avoid activating the app
         self.orderFrontRegardless()
-        self.alphaValue = 1.0  // Fade in immediately
+        self.alphaValue = 1.0
 
-        // CRITICAL: Animate expansion downward (like notch extending)
-        // Keep top edge fixed, increase height downward
-        print("🪟 [ProtectionTimerWindow] Animating notch expansion...")
-
+        // Animate expansion
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.5  // Snappier timing
-                // Smooth ease-out like native macOS (no bounce)
+                context.duration = 0.5
                 context.timingFunction = CAMediaTimingFunction(name: .easeOut)
                 context.allowsImplicitAnimation = true
 
-                // Expand DOWN from notch - keep top fixed, grow height
                 let finalY = screenFrame.maxY - (self.notchHeight + self.timerExpandedHeight)
                 let finalFrame = NSRect(
                     x: centerX,
@@ -369,13 +430,8 @@ class ProtectionTimerWindow: NSWindow {
                     height: self.notchHeight + self.timerExpandedHeight
                 )
 
-                print("🪟 [ProtectionTimerWindow] Expanding to: \(finalFrame)")
                 self.animator().setFrame(finalFrame, display: true)
-
-                // Add shadow when expanded
                 self.hasShadow = true
-            } completionHandler: {
-                print("🪟 [ProtectionTimerWindow] Expansion complete!")
             }
         }
     }
@@ -482,20 +538,15 @@ class ProtectionTimerWindow: NSWindow {
     }
 }
 
-// MARK: - Protection Timer View (Minimal Progress Design)
+// MARK: - Unified Protection Widget View
 
-struct ProtectionTimerView: View {
-    @ObservedObject var viewModel: ProtectionTimerViewModel
+/// Single widget that displays either confirmation or timer state with smooth transitions
+struct UnifiedProtectionWidgetView: View {
+    @ObservedObject var viewModel: ProtectionWidgetViewModel
+    let onConfirm: () -> Void
+    let onSkip: () -> Void
 
-    // Calculate progress (0.0 to 1.0) based on time remaining
-    private var progress: CGFloat {
-        CGFloat(viewModel.timeRemaining / 120.0)
-    }
-
-    // Dynamic width based on warning state
-    private var widgetWidth: CGFloat {
-        viewModel.showWarning ? 280 : 100
-    }
+    @State private var hasResponded: Bool = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -503,96 +554,252 @@ struct ProtectionTimerView: View {
             Color.clear
                 .frame(height: 32)
 
-            // Main content - ultra minimal
-            HStack(spacing: 0) {
-                // Compact shield indicator
-                ZStack {
-                    // Subtle glow background
-                    Circle()
-                        .fill(
-                            RadialGradient(
-                                colors: [Color.green.opacity(0.15), Color.clear],
-                                center: .center,
-                                startRadius: 0,
-                                endRadius: 30
-                            )
-                        )
-                        .frame(width: 60, height: 60)
+            // Content changes based on state
+            Group {
+                switch viewModel.state {
+                case .confirmation(let address, let type):
+                    confirmationContent(address: address, type: type)
+                        .transition(.asymmetric(
+                            insertion: .opacity.combined(with: .scale(scale: 0.95)),
+                            removal: .opacity.combined(with: .scale(scale: 1.05))
+                        ))
 
-                    // Shield icon
-                    Image(systemName: "shield.fill")
-                        .font(.system(size: 22, weight: .medium))
-                        .foregroundColor(.green.opacity(0.9))
-
-                    // Minimal circular progress
-                    Circle()
-                        .trim(from: 0, to: progress)
-                        .stroke(
-                            Color.green.opacity(0.6),
-                            style: StrokeStyle(lineWidth: 2, lineCap: .round)
-                        )
-                        .frame(width: 36, height: 36)
-                        .rotationEffect(.degrees(-90))
-                        .animation(.linear(duration: 0.1), value: progress)
-                }
-                .frame(width: 60)
-                .padding(.horizontal, 20)
-
-                // Warning message (slides in from right)
-                if viewModel.showWarning {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Clipboard Locked")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundColor(.white)
-
-                        Text("Protection active")
-                            .font(.system(size: 11, weight: .regular))
-                            .foregroundColor(.white.opacity(0.6))
-                    }
-                    .padding(.trailing, 20)
-                    .transition(.asymmetric(
-                        insertion: .move(edge: .trailing).combined(with: .opacity),
-                        removal: .move(edge: .trailing).combined(with: .opacity)
-                    ))
+                case .timer(let type, let timeRemaining):
+                    timerContent(type: type, timeRemaining: timeRemaining)
+                        .transition(.asymmetric(
+                            insertion: .opacity.combined(with: .scale(scale: 0.95)),
+                            removal: .opacity.combined(with: .scale(scale: 1.05))
+                        ))
                 }
             }
-            .frame(height: 70)
+            .animation(.smooth(duration: 0.4), value: viewModel.state)
         }
-        .frame(width: widgetWidth)
-        .background(
-            UnevenRoundedRectangle(
-                topLeadingRadius: 0,
-                bottomLeadingRadius: 35,
-                bottomTrailingRadius: 35,
-                topTrailingRadius: 0,
-                style: .continuous
+        .background(widgetBackground)
+    }
+
+    // Confirmation state UI
+    @ViewBuilder
+    private func confirmationContent(address: String, type: CryptoType) -> some View {
+        VStack(spacing: 0) {
+            // Header with logo and address
+            HStack(spacing: 14) {
+                ChainLogoView(cryptoType: type, size: 44)
+                    .allowsHitTesting(false)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("\(type.rawValue) Detected")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(.white)
+
+                    Text(maskAddress(address))
+                        .font(.system(size: 11, weight: .regular, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.5))
+                }
+
+                Spacer()
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 14)
+            .frame(height: 72)
+
+            // Single Protect button with ESC hint
+            HStack(spacing: 0) {
+                // ESC hint on left
+                HStack(spacing: 4) {
+                    Text("ESC")
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.4))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(
+                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                .fill(Color.white.opacity(0.08))
+                        )
+
+                    Text("to dismiss")
+                        .font(.system(size: 10, weight: .regular))
+                        .foregroundColor(.white.opacity(0.3))
+                }
+
+                Spacer()
+
+                // Protect button on right
+                Button(action: {
+                    print("🔘 [UnifiedWidget] Protect button tapped")
+                    guard !hasResponded else { return }
+                    hasResponded = true
+                    onConfirm()
+                }) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "shield.fill")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text("Protect")
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 9)
+                    .background(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(
+                                LinearGradient(
+                                    colors: [Color(red: 0.2, green: 0.78, blue: 0.35), Color(red: 0.18, green: 0.7, blue: 0.32)],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(hasResponded)
+            }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 14)
+
+            // Progress bar (only show in confirmation state)
+            ConfirmationProgressBar()
+                .frame(height: 2)
+                .padding(.horizontal, 20)
+                .padding(.bottom, 8)
+        }
+    }
+
+    // Timer state UI
+    @ViewBuilder
+    private func timerContent(type: CryptoType, timeRemaining: TimeInterval) -> some View {
+        HStack(spacing: 16) {
+            // Blue shield icon
+            ZStack {
+                Circle()
+                    .fill(Color.blue)
+                    .frame(width: 44, height: 44)
+
+                Image(systemName: "shield.fill")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundColor(.white)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Protection Active")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.white)
+
+                if viewModel.showWarning {
+                    Text(viewModel.warningMessage ?? "")
+                        .font(.system(size: 13, weight: .regular))
+                        .foregroundColor(Color(red: 0.96, green: 0.62, blue: 0.27))
+                } else {
+                    Text("\(type.rawValue) address")
+                        .font(.system(size: 13, weight: .regular))
+                        .foregroundColor(.white.opacity(0.6))
+                }
+            }
+
+            Spacer()
+
+            // Time remaining
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(formatTime(timeRemaining))
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundColor(.blue)
+
+                Text("remaining")
+                    .font(.system(size: 10, weight: .regular))
+                    .foregroundColor(.white.opacity(0.5))
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
+        .frame(height: 72)
+    }
+
+    private var widgetBackground: some View {
+        UnevenRoundedRectangle(
+            topLeadingRadius: 0,
+            bottomLeadingRadius: 36,
+            bottomTrailingRadius: 36,
+            topTrailingRadius: 0,
+            style: .continuous
+        )
+        .fill(
+            LinearGradient(
+                colors: [
+                    Color(red: 0.06, green: 0.09, blue: 0.16),
+                    Color(red: 0.03, green: 0.05, blue: 0.10)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
             )
-            .fill(Color.black.opacity(0.92))
         )
         .overlay(
             UnevenRoundedRectangle(
                 topLeadingRadius: 0,
-                bottomLeadingRadius: 35,
-                bottomTrailingRadius: 35,
+                bottomLeadingRadius: 36,
+                bottomTrailingRadius: 36,
                 topTrailingRadius: 0,
                 style: .continuous
             )
-            .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
+            .strokeBorder(
+                LinearGradient(
+                    colors: [Color.white.opacity(0.2), Color.white.opacity(0.05)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                ),
+                lineWidth: 1
+            )
         )
-        .shadow(color: .black.opacity(0.5), radius: 25, x: 0, y: 12)
-        .animation(.spring(response: 0.35, dampingFraction: 0.75), value: widgetWidth)
+        .shadow(color: .black.opacity(0.5), radius: 30, x: 0, y: 10)
+    }
+
+    private func maskAddress(_ address: String) -> String {
+        guard address.count > 10 else { return "***" }
+        let start = address.prefix(6)
+        let end = address.suffix(4)
+        return "\(start)...\(end)"
+    }
+
+    private func formatTime(_ time: TimeInterval) -> String {
+        let minutes = Int(time) / 60
+        let seconds = Int(time) % 60
+        return String(format: "%d:%02d", minutes, seconds)
     }
 }
 
-// MARK: - Confirmation Widget View
+// Helper view for confirmation progress bar
+struct ConfirmationProgressBar: View {
+    @State private var countdown: CGFloat = 1.0
 
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 1, style: .continuous)
+                    .fill(Color.white.opacity(0.1))
+                    .frame(height: 2)
+
+                RoundedRectangle(cornerRadius: 1, style: .continuous)
+                    .fill(Color.white.opacity(0.3))
+                    .frame(width: geometry.size.width * countdown, height: 2)
+            }
+        }
+        .onAppear {
+            withAnimation(.linear(duration: 6.0)) {
+                countdown = 0.0
+            }
+        }
+    }
+}
+
+// MARK: - Legacy Views (kept for DynamicNotchKit compatibility)
+
+/// Old confirmation widget view (used by DynamicNotchKit, deprecated)
+@available(*, deprecated, message: "Use UnifiedProtectionWidgetView instead")
 struct ConfirmationWidgetView: View {
     let address: String
     let type: CryptoType
     let onConfirm: () -> Void
     let onDismiss: () -> Void
 
-    @State private var countdown: CGFloat = 1.0  // 1.0 to 0.0 (6 seconds)
+    @State private var countdown: CGFloat = 1.0  // 1.0 to 0.0 (auto-dismiss timer)
     @State private var hasResponded: Bool = false  // Prevent double-clicks
 
     var body: some View {
@@ -601,100 +808,112 @@ struct ConfirmationWidgetView: View {
             Color.clear
                 .frame(height: 32)
 
-            // Main content - ultra minimal
-            VStack(spacing: 14) {
-                // Crypto icon - small and minimal
-                ZStack {
-                    Circle()
-                        .fill(Color.white.opacity(0.08))
-                        .frame(width: 36, height: 36)
+            // Main content - compact and minimal
+            HStack(spacing: 14) {
+                // Chain logo from SVG
+                ChainLogoView(cryptoType: type, size: 44)
+                    .allowsHitTesting(false)  // Logo shouldn't intercept clicks
 
-                    Text(cryptoEmoji(for: type))
-                        .font(.system(size: 18))
+                // Content area
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("\(type.rawValue) Detected")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(.white)
+
+                    Text(maskAddress(address))
+                        .font(.system(size: 11, weight: .regular, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.5))
                 }
 
-                // Title - clean and simple
-                Text("Protect \(type.rawValue) Address?")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundColor(.white)
+                Spacer()
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 14)
+            .frame(height: 72)  // Same height as other widgets
 
-                // Address - subtle monospace
-                Text(maskAddress(address))
-                    .font(.system(size: 11, weight: .regular, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.5))
-
-                // Buttons - minimal modern style with pill-shaped corners
-                HStack(spacing: 10) {
-                    // Dismiss - ghost button
-                    Button(action: {
-                        guard !hasResponded else { return }
-                        hasResponded = true
-                        onDismiss()
-                    }) {
-                        Text("Skip")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundColor(.white.opacity(0.6))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 9)
-                            .background(
-                                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                    .fill(Color.white.opacity(0.05))
-                            )
+            // Buttons
+            HStack(spacing: 10) {
+                // Skip button
+                Button(action: {
+                    print("🔘 [ConfirmationWidget] Skip button ACTION triggered")
+                    guard !hasResponded else {
+                        print("   ⚠️  Already responded, ignoring")
+                        return
                     }
-                    .buttonStyle(.plain)
-                    .disabled(hasResponded)
-
-                    // Confirm - accent button
-                    Button(action: {
-                        guard !hasResponded else { return }
-                        hasResponded = true
-                        onConfirm()
-                    }) {
-                        HStack(spacing: 5) {
-                            Image(systemName: "shield.fill")
-                                .font(.system(size: 11, weight: .semibold))
-
-                            Text("Protect")
-                                .font(.system(size: 13, weight: .semibold))
-                        }
-                        .foregroundColor(.white)
+                    print("   ✅ Setting hasResponded = true")
+                    hasResponded = true
+                    print("   📞 Calling onDismiss()...")
+                    onDismiss()
+                    print("   ✅ onDismiss() called")
+                }) {
+                    Text("Skip")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.white.opacity(0.6))
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 9)
                         .background(
                             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .fill(
-                                    LinearGradient(
-                                        colors: [Color(red: 0.2, green: 0.78, blue: 0.35), Color(red: 0.18, green: 0.7, blue: 0.32)],
-                                        startPoint: .top,
-                                        endPoint: .bottom
-                                    )
-                                )
+                                .fill(Color.white.opacity(0.05))
                         )
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(hasResponded)
                 }
-                .padding(.top, 2)
+                .buttonStyle(.plain)
+                .disabled(hasResponded)
 
-                // Minimal progress bar
-                GeometryReader { geometry in
-                    ZStack(alignment: .leading) {
-                        // Background
-                        RoundedRectangle(cornerRadius: 1, style: .continuous)
-                            .fill(Color.white.opacity(0.1))
-                            .frame(height: 2)
-
-                        // Progress
-                        RoundedRectangle(cornerRadius: 1, style: .continuous)
-                            .fill(Color.white.opacity(0.3))
-                            .frame(width: geometry.size.width * countdown, height: 2)
+                // Protect button
+                Button(action: {
+                    print("🔘 [ConfirmationWidget] Protect button ACTION triggered")
+                    guard !hasResponded else {
+                        print("   ⚠️  Already responded, ignoring")
+                        return
                     }
+                    print("   ✅ Setting hasResponded = true")
+                    hasResponded = true
+                    print("   📞 Calling onConfirm()...")
+                    onConfirm()
+                    print("   ✅ onConfirm() called")
+                }) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "shield.fill")
+                            .font(.system(size: 11, weight: .semibold))
+
+                        Text("Protect")
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 9)
+                    .background(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(
+                                LinearGradient(
+                                    colors: [Color(red: 0.2, green: 0.78, blue: 0.35), Color(red: 0.18, green: 0.7, blue: 0.32)],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
+                    )
                 }
-                .frame(height: 2)
+                .buttonStyle(.plain)
+                .disabled(hasResponded)
             }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 14)
-            .padding(.bottom, 6)
+            .padding(.horizontal, 20)
+            .padding(.bottom, 14)
+
+            // Progress bar
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 1, style: .continuous)
+                        .fill(Color.white.opacity(0.1))
+                        .frame(height: 2)
+
+                    RoundedRectangle(cornerRadius: 1, style: .continuous)
+                        .fill(Color.white.opacity(0.3))
+                        .frame(width: geometry.size.width * countdown, height: 2)
+                }
+            }
+            .frame(height: 2)
+            .padding(.horizontal, 20)
+            .padding(.bottom, 8)
         }
         .background(
             UnevenRoundedRectangle(
@@ -704,22 +923,38 @@ struct ConfirmationWidgetView: View {
                 topTrailingRadius: 0,
                 style: .continuous
             )
-            .fill(Color.black.opacity(0.95))
-        )
-        .overlay(
-            // Subtle border
-            UnevenRoundedRectangle(
-                topLeadingRadius: 0,
-                bottomLeadingRadius: 36,
-                bottomTrailingRadius: 36,
-                topTrailingRadius: 0,
-                style: .continuous
+            .fill(
+                LinearGradient(
+                    colors: [
+                        Color(red: 0.06, green: 0.09, blue: 0.16),
+                        Color(red: 0.03, green: 0.05, blue: 0.10)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
             )
-            .stroke(Color.white.opacity(0.1), lineWidth: 0.5)
+            .overlay(
+                UnevenRoundedRectangle(
+                    topLeadingRadius: 0,
+                    bottomLeadingRadius: 36,
+                    bottomTrailingRadius: 36,
+                    topTrailingRadius: 0,
+                    style: .continuous
+                )
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.2), Color.white.opacity(0.05)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: 1
+                )
+            )
+            .shadow(color: .black.opacity(0.5), radius: 30, x: 0, y: 10)
         )
-        .shadow(color: .black.opacity(0.4), radius: 30, x: 0, y: 15)
         .onAppear {
-            withAnimation(.linear(duration: 6.0)) {
+            // Start auto-dismiss countdown (10 seconds for user interaction)
+            withAnimation(.linear(duration: 10.0)) {
                 countdown = 0.0
             }
         }
@@ -756,45 +991,80 @@ struct ProtectionEnabledToast: View {
     @State private var opacity: Double = 0
 
     var body: some View {
-        HStack(spacing: 12) {
-            // Shield icon
+        HStack(spacing: 16) {
+            // Chain logo with checkmark overlay
             ZStack {
-                Circle()
-                    .fill(Color.green.opacity(0.2))
-                    .frame(width: 40, height: 40)
+                ChainLogoView(cryptoType: cryptoType, size: 44)
 
-                Image(systemName: "shield.lefthalf.filled")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundColor(.green)
+                // Small checkmark overlay
+                Circle()
+                    .fill(Color.green)
+                    .frame(width: 20, height: 20)
+                    .overlay(
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(.white)
+                    )
+                    .offset(x: 14, y: 14)
             }
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Protection Enabled")
-                    .font(.system(size: 14, weight: .semibold))
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Protected")
+                    .font(.system(size: 16, weight: .semibold))
                     .foregroundColor(.white)
 
-                Text("\(cryptoType.rawValue) • 2 minutes")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.white.opacity(0.7))
+                Text("Monitoring for 2:00")
+                    .font(.system(size: 13, weight: .regular))
+                    .foregroundColor(.white.opacity(0.6))
             }
 
             Spacer()
+
+            // Response time indicator
+            VStack(alignment: .trailing, spacing: 2) {
+                Text("5ms")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundColor(.green)
+
+                Text("response")
+                    .font(.system(size: 10, weight: .regular))
+                    .foregroundColor(.white.opacity(0.5))
+            }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
         .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color.black.opacity(0.85))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.15), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color(red: 0.06, green: 0.09, blue: 0.16),  // Dark navy
+                            Color(red: 0.03, green: 0.05, blue: 0.10)   // Darker
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
                 )
-                .shadow(color: .black.opacity(0.3), radius: 20, x: 0, y: 8)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [
+                                    Color.white.opacity(0.2),
+                                    Color.white.opacity(0.05)
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            ),
+                            lineWidth: 1
+                        )
+                )
+                .shadow(color: .black.opacity(0.5), radius: 30, x: 0, y: 10)
         )
         .scaleEffect(scale)
         .opacity(opacity)
         .onAppear {
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {
                 scale = 1.0
                 opacity = 1.0
             }
@@ -802,13 +1072,124 @@ struct ProtectionEnabledToast: View {
     }
 }
 
+// MARK: - Same Address Toast
+
+/// Toast shown when user copies the same address that's already protected
+struct SameAddressToast: View {
+    let cryptoType: CryptoType
+    @State private var scale: CGFloat = 0.5
+    @State private var opacity: Double = 0
+    @State private var rotation: Double = -10
+    @State private var checkmarkScale: CGFloat = 0
+
+    var body: some View {
+        HStack(spacing: 16) {
+            // Chain logo with checkmark + glow ring for psychological "already protected" feedback
+            ZStack {
+                // Outer glow ring - psychological "safety" indicator
+                Circle()
+                    .stroke(Color.green.opacity(0.3), lineWidth: 3)
+                    .frame(width: 54, height: 54)
+                    .scaleEffect(checkmarkScale * 1.2)
+
+                ChainLogoView(cryptoType: cryptoType, size: 44)
+                    .scaleEffect(checkmarkScale)
+
+                // Small checkmark overlay
+                Circle()
+                    .fill(Color.green)
+                    .frame(width: 20, height: 20)
+                    .overlay(
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(.white)
+                    )
+                    .offset(x: 14, y: 14)
+                    .scaleEffect(checkmarkScale)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Already Protected")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.white)
+                Text("Same \(cryptoType.rawValue) address")
+                    .font(.system(size: 13, weight: .regular))
+                    .foregroundColor(.white.opacity(0.7))
+            }
+
+            Spacer()
+
+            // Trust indicator - shows protection is active
+            VStack(alignment: .trailing, spacing: 2) {
+                Image(systemName: "lock.shield.fill")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundColor(.green)
+                Text("secure")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.green.opacity(0.8))
+            }
+            .scaleEffect(checkmarkScale)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
+        .background(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color(red: 0.06, green: 0.09, blue: 0.16),  // Dark navy
+                            Color(red: 0.03, green: 0.05, blue: 0.10)   // Darker
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [
+                                    Color.green.opacity(0.4),  // Green glow - trust signal
+                                    Color.green.opacity(0.1)
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            ),
+                            lineWidth: 1.5
+                        )
+                )
+                .shadow(color: .green.opacity(0.3), radius: 20, x: 0, y: 5)
+                .shadow(color: .black.opacity(0.5), radius: 30, x: 0, y: 10)
+        )
+        .scaleEffect(scale)
+        .opacity(opacity)
+        .rotationEffect(.degrees(rotation))
+        .onAppear {
+            // Satisfying entrance animation - psychological "reward" feeling
+            withAnimation(.spring(response: 0.6, dampingFraction: 0.6)) {
+                scale = 1.0
+                opacity = 1.0
+                rotation = 0
+            }
+
+            // Delayed checkmark pop - creates anticipation then satisfaction
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.5).delay(0.2)) {
+                checkmarkScale = 1.0
+            }
+        }
+    }
+}
+
 #Preview {
-    let viewModel = ProtectionTimerViewModel(
-        cryptoType: .ethereum,
-        timeRemaining: 95,
+    let viewModel = ProtectionWidgetViewModel(
+        state: .timer(type: .ethereum, timeRemaining: 95),
         onDismiss: {}
     )
-    ProtectionTimerView(viewModel: viewModel)
-        .frame(width: 320, height: 100)
+    UnifiedProtectionWidgetView(
+        viewModel: viewModel,
+        onConfirm: {},
+        onSkip: {}
+    )
+    .frame(width: 320, height: 200)
 }
 #endif

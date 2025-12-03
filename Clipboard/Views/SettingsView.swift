@@ -129,7 +129,7 @@ struct SettingsView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Launch at Login")
                                 .fontWeight(.medium)
-                            Text("Start ClipboardGuard when you log in")
+                            Text("Start Klip when you log in")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -171,7 +171,7 @@ struct SettingsView: View {
                         Text("License Type")
                             .fontWeight(.medium)
                         Spacer()
-                        Text(licenseManager.licenseData?.product.rawValue.replacingOccurrences(of: "clipboardguard_", with: "").capitalized ?? "Unknown")
+                        Text(licenseManager.licenseData?.product.rawValue.replacingOccurrences(of: "klip_", with: "").capitalized ?? "Unknown")
                             .foregroundColor(.secondary)
                     }
 
@@ -255,7 +255,7 @@ struct SettingsView: View {
                     PrivacyRow(
                         icon: "eye.slash",
                         title: "No Analytics",
-                        description: "We don't track your usage or behavior"
+                        description: "No tracking of usage or behavior"
                     )
 
                     Divider()
@@ -303,7 +303,7 @@ struct SettingsView: View {
                         .frame(width: 60, height: 60)
                         .foregroundStyle(.blue.gradient)
 
-                    Text("ClipboardGuard")
+                    Text("Klip")
                         .font(.title3)
                         .fontWeight(.bold)
 
@@ -323,15 +323,15 @@ struct SettingsView: View {
 
                 VStack(alignment: .leading, spacing: 12) {
                     Button("Website") {
-                        openURL("https://clipboardguard.app")
+                        openURL("https://klip.app")
                     }
 
                     Button("Support") {
-                        openURL("mailto:support@clipboardguard.app")
+                        openURL("mailto:support@klip.app")
                     }
 
                     Button("Privacy Policy") {
-                        openURL("https://clipboardguard.app/privacy")
+                        openURL("https://klip.app/privacy")
                     }
                 }
                 .buttonStyle(.bordered)

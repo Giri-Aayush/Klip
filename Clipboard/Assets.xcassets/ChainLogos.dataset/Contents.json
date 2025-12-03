@@ -1,0 +1,20 @@
+{
+  "data" : [
+    {
+      "filename" : "bitcoin-btc-logo.svg",
+      "idiom" : "universal"
+    },
+    {
+      "filename" : "ethereum-eth-logo-colored.svg",
+      "idiom" : "universal"
+    },
+    {
+      "filename" : "solana-sol-logo.svg",
+      "idiom" : "universal"
+    }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  }
+}

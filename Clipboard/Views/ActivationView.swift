@@ -33,7 +33,7 @@ struct ActivationView: View {
 
             // Title
             VStack(spacing: 8) {
-                Text("Activate ClipboardGuard")
+                Text("Activate Klip")
                     .font(.title)
                     .fontWeight(.bold)
 
@@ -100,14 +100,14 @@ struct ActivationView: View {
             // Links
             HStack(spacing: 20) {
                 Button("Buy License") {
-                    openURL("https://clipboardguard.app/pricing")
+                    openURL("https://klip.app/pricing")
                 }
 
                 Text("·")
                     .foregroundColor(.secondary)
 
                 Button("Lost License?") {
-                    openURL("https://clipboardguard.app/recover")
+                    openURL("https://klip.app/recover")
                 }
             }
             .font(.footnote)

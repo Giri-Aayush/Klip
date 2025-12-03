@@ -1,8 +1,8 @@
-# ClipboardGuard 🛡️
+# Klip 🛡️
 
 **Real-time clipboard protection for cryptocurrency users on macOS**
 
-ClipboardGuard is a native macOS security application that protects your cryptocurrency addresses from clipboard hijacking malware. Built with SwiftUI and optimized for ultra-fast detection (<10ms), it monitors your clipboard in real-time and prevents malicious software from replacing your crypto addresses.
+Klip is a native macOS security application that protects your cryptocurrency addresses from clipboard hijacking malware. Built with SwiftUI and optimized for ultra-fast detection (<10ms), it monitors your clipboard in real-time and prevents malicious software from replacing your crypto addresses.
 
 ---
 
@@ -56,8 +56,8 @@ ClipboardGuard is a native macOS security application that protects your cryptoc
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/yourusername/clipboardguard.git
-   cd clipboardguard
+   git clone https://github.com/yourusername/klip.git
+   cd klip
    ```
 
 2. **Open in Xcode:**
@@ -272,7 +272,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 📞 Support
 
-- **Issues**: [GitHub Issues](https://github.com/yourusername/clipboardguard/issues)
+- **Issues**: [GitHub Issues](https://github.com/yourusername/klip/issues)
 - **Documentation**: See `TESTING_GUIDE.md` and inline code comments
 - **Security**: Report vulnerabilities privately via GitHub Security tab
 
@@ -280,7 +280,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## ⚠️ Disclaimer
 
-ClipboardGuard is a security tool designed to protect against clipboard hijacking attacks. While it provides robust protection, **no security tool is 100% foolproof**. Always verify destination addresses before sending cryptocurrency transactions. The developers are not responsible for any financial losses.
+Klip is a security tool designed to protect against clipboard hijacking attacks. While it provides robust protection, **no security tool is 100% foolproof**. Always verify destination addresses before sending cryptocurrency transactions. The developers are not responsible for any financial losses.
 
 ---
 

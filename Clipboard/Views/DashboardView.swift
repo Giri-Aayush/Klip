@@ -12,28 +12,53 @@ struct DashboardView: View {
     // MARK: - Environment
 
     @ObservedObject var clipboardMonitor: ClipboardMonitor
+    @ObservedObject var statsManager: StatisticsManager
+    @State private var selectedTab: DashboardTab = .overview
+
+    enum DashboardTab: String, CaseIterable {
+        case overview = "Overview"
+        case statistics = "Statistics"
+    }
 
     // MARK: - Body
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 20) {
-                // Status Header
-                statusHeader
-
-                Divider()
-
-                // Statistics
-                statisticsSection
-
-                // Activity Graph Placeholder
-                activityGraphSection
-
-                Spacer()
+        VStack(spacing: 0) {
+            // Tab selector
+            Picker("Dashboard Tab", selection: $selectedTab) {
+                ForEach(DashboardTab.allCases, id: \.self) { tab in
+                    Text(tab.rawValue).tag(tab)
+                }
             }
+            .pickerStyle(SegmentedPickerStyle())
             .padding()
+
+            // Tab content
+            if selectedTab == .overview {
+                ScrollView {
+                    VStack(spacing: 20) {
+                        // Status Header
+                        statusHeader
+
+                        Divider()
+
+                        // Statistics
+                        statisticsSection
+
+                        // Activity Graph Placeholder
+                        activityGraphSection
+
+                        Spacer()
+                    }
+                    .padding()
+                }
+                .frame(maxWidth: 400)
+            } else {
+                // Full statistics dashboard
+                StatisticsDashboardView(statsManager: statsManager)
+                    .frame(maxWidth: .infinity)
+            }
         }
-        .frame(maxWidth: 400)
     }
 
     // MARK: - Components
@@ -185,12 +210,13 @@ struct StatRow: View {
 // MARK: - Preview
 
 #Preview {
-    let monitor = ClipboardMonitor()
-    monitor.checksToday = 247
-    monitor.threatsBlocked = 2
-    monitor.lastDetectedAddress = "bc1qxy2...4a9c"
-    monitor.lastDetectedCryptoType = .bitcoin
-    monitor.isMonitoring = true
-
-    return DashboardView(clipboardMonitor: monitor)
+    DashboardView(clipboardMonitor: {
+        let monitor = ClipboardMonitor()
+        monitor.checksToday = 247
+        monitor.threatsBlocked = 2
+        monitor.lastDetectedAddress = "bc1qxy2...4a9c"
+        monitor.lastDetectedCryptoType = .bitcoin
+        monitor.isMonitoring = true
+        return monitor
+    }(), statsManager: StatisticsManager())
 }

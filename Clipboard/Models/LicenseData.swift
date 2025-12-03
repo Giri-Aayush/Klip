@@ -9,8 +9,8 @@ import Foundation
 
 /// License product types
 enum LicenseType: String, Codable {
-    case annual = "clipboardguard_annual"
-    case lifetime = "clipboardguard_lifetime"
+    case annual = "klip_annual"
+    case lifetime = "klip_lifetime"
 }
 
 /// License data structure

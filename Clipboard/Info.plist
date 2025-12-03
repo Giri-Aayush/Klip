@@ -3,8 +3,8 @@
 <plist version="1.0">
 <dict>
 	<key>NSUserNotificationUsageDescription</key>
-	<string>ClipboardGuard needs to send notifications to alert you of clipboard hijacking attempts.</string>
+	<string>Klip needs to send notifications to alert you of clipboard hijacking attempts.</string>
 	<key>NSUserNotificationsUsageDescription</key>
-	<string>ClipboardGuard needs to send notifications to alert you of clipboard hijacking attempts.</string>
+	<string>Klip needs to send notifications to alert you of clipboard hijacking attempts.</string>
 </dict>
 </plist>

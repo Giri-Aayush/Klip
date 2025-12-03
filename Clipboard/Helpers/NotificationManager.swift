@@ -209,7 +209,7 @@ class NotificationManager: NSObject, ObservableObject {
             let alert = NSAlert()
             alert.messageText = "⚠️ Clipboard Hijack Attempt Blocked"
             alert.informativeText = """
-            ClipboardGuard detected and blocked malicious software attempting to replace your cryptocurrency address.
+            Klip detected and blocked malicious software attempting to replace your cryptocurrency address.
 
             Original:    \(self.maskAddress(originalAddress))
             Attempted:   \(self.maskAddress(attemptedAddress))
